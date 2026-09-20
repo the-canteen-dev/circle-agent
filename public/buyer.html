@@ -561,21 +561,105 @@
         return false;
       }
 
-      document.getElementById("connect").onclick = async () => {
-        if (!window.ethereum) {
-          setStatus("MetaMask not detected", "err");
-          return;
-        }
-        const accounts = await ethereum.request({ method: "eth_requestAccounts" });
-        account = accounts[0];
+      // --- connect / disconnect -------------------------------------------
+
+      const connectBtn = document.getElementById("connect");
+
+      async function setConnected(addr) {
+        account = addr;
         addrEl.textContent = account;
         addrEl.classList.remove("muted");
+        connectBtn.textContent = "Disconnect";
         await ensureArcTestnet();
         payBtn.disabled = false;
         depositBtn.disabled = false;
         setStatus("ready", "ok");
         await refreshBalances();
+      }
+
+      function setDisconnected() {
+        account = null;
+        walletRaw = null;
+        gatewayRaw = null;
+        addrEl.textContent = "not connected";
+        addrEl.classList.add("muted");
+        connectBtn.textContent = "Connect MetaMask";
+        payBtn.disabled = true;
+        depositBtn.disabled = true;
+        balancePanel.classList.add("hidden");
+        walletBalEl.textContent = "—";
+        gatewayBalEl.textContent = "—";
+        balStatusEl.textContent = "";
+        payHintEl.innerHTML = "";
+        depositTraceEl.innerHTML = "";
+        setDepositStatus("");
+        setStatus("");
+        outEl.textContent = "—";
+      }
+
+      // Once a site is authorized, eth_requestAccounts silently returns the
+      // account chosen the first time — even after a page refresh. Asking for
+      // the eth_accounts permission explicitly makes MetaMask re-open its
+      // account picker so a different address can be chosen.
+      async function connect() {
+        if (!window.ethereum) {
+          setStatus("MetaMask not detected", "err");
+          return;
+        }
+        setStatus("waiting for MetaMask…");
+        try {
+          await ethereum.request({
+            method: "wallet_requestPermissions",
+            params: [{ eth_accounts: {} }],
+          });
+        } catch (e) {
+          if (e?.code === 4001) { setStatus("connection cancelled"); return; }
+          // Wallet doesn't support wallet_requestPermissions — fall through
+          // to the plain request, which will still connect (no picker).
+        }
+        const accounts = await ethereum.request({ method: "eth_requestAccounts" });
+        if (!accounts?.length) { setStatus("no account selected", "err"); return; }
+        watchAccounts();
+        await setConnected(accounts[0]);
+      }
+
+      // Revoke the site's eth_accounts permission so the next Connect starts
+      // from a clean slate. MetaMask supports this; other wallets may not, in
+      // which case we still reset the page state.
+      async function disconnect() {
+        try {
+          await ethereum.request({
+            method: "wallet_revokePermissions",
+            params: [{ eth_accounts: {} }],
+          });
+        } catch {
+          // unsupported or rejected — local reset is still correct
+        }
+        setDisconnected();
+      }
+
+      connectBtn.onclick = async () => {
+        try {
+          if (account) await disconnect();
+          else await connect();
+        } catch (e) {
+          setStatus(String(e?.message ?? e), "err");
+        }
       };
+
+      // Keep the page in sync when the account is switched (or the site is
+      // disconnected) from inside the MetaMask UI. Registered on first connect
+      // rather than at load so late-injected providers are covered too.
+      let accountsListenerAttached = false;
+      function watchAccounts() {
+        if (accountsListenerAttached || !window.ethereum?.on) return;
+        accountsListenerAttached = true;
+        ethereum.on("accountsChanged", (accounts) => {
+          if (!accounts?.length) { setDisconnected(); return; }
+          if (accounts[0].toLowerCase() === account?.toLowerCase()) return;
+          setConnected(accounts[0]).catch((e) => setStatus(String(e?.message ?? e), "err"));
+        });
+      }
 
       refreshBalBtn.onclick = () => refreshBalances();
 
