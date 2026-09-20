@@ -57,17 +57,43 @@ export type DecodedBatch = {
   settlementsByBuyer: Record<string, Settlement[]>;
 };
 
-export async function decodeBatch(
-  txHash: `0x${string}`,
-): Promise<DecodedBatch> {
+// Everything the on-chain tx tells us before we look inside calldataBytes.
+export type BatchTx = {
+  txHash: `0x${string}`;
+  blockNumber: bigint;
+  blockTimestamp: number;
+  relayer: `0x${string}`;
+  contract: `0x${string}`;
+  input: Hex;
+};
+
+export type DecodedCalldata = Pick<
+  DecodedBatch,
+  "batchId" | "domain" | "token" | "innerContract" | "entries" | "netTransfers"
+>;
+
+// Fetch the tx and its block from the RPC, then decode. Public RPC nodes only
+// keep the tx-hash index for a recent window of blocks, so old batches stop
+// resolving here even though the block itself is still served — see
+// snapshot-batch.ts for pinning a batch that has aged out.
+export async function fetchBatchTx(txHash: `0x${string}`): Promise<BatchTx> {
   const client = createPublicClient({ transport: http(RPC) });
   const tx = await client.getTransaction({ hash: txHash });
   if (!tx.to) throw new Error("contract creation, not a submitBatch");
+  const blockNumber = tx.blockNumber ?? 0n;
+  const block = await client.getBlock({ blockNumber });
+  return {
+    txHash,
+    blockNumber,
+    blockTimestamp: Number(block.timestamp),
+    relayer: tx.from,
+    contract: tx.to,
+    input: tx.input,
+  };
+}
 
-  const decoded = decodeFunctionData({
-    abi: SUBMIT_BATCH_ABI,
-    data: tx.input,
-  });
+export function decodeBatchCalldata(input: Hex): DecodedCalldata {
+  const decoded = decodeFunctionData({ abi: SUBMIT_BATCH_ABI, data: input });
   if (decoded.functionName !== "submitBatch") {
     throw new Error(`not submitBatch (got ${decoded.functionName})`);
   }
@@ -117,10 +143,16 @@ export async function decodeBatch(
     }
   }
 
-  const blockNumber = tx.blockNumber ?? 0n;
-  const block = await client.getBlock({ blockNumber });
-  const blockTimestamp = Number(block.timestamp);
+  return { batchId, domain, token, innerContract, entries, netTransfers };
+}
 
+// Off-chain heuristic: for every debited address, pull its settlements from
+// the Gateway API and keep the ones whose updatedAt sits within the window
+// around the batch's block timestamp.
+export async function matchSettlements(
+  entries: BatchEntry[],
+  blockTimestamp: number,
+): Promise<Record<string, Settlement[]>> {
   const buyerAddrs = Array.from(
     new Set(
       entries.filter((e) => e.delta < 0n).map((e) => e.address.toLowerCase()),
@@ -146,20 +178,43 @@ export async function decodeBatch(
       }
     }),
   );
+  return settlementsByBuyer;
+}
 
+export async function decodeBatchFromTx(tx: BatchTx): Promise<DecodedBatch> {
+  const calldata = decodeBatchCalldata(tx.input);
+  const settlementsByBuyer = await matchSettlements(
+    calldata.entries,
+    tx.blockTimestamp,
+  );
   return {
-    txHash,
-    blockNumber,
-    blockTimestamp,
-    relayer: tx.from,
-    contract: tx.to,
-    batchId,
-    domain,
-    token,
-    innerContract,
-    entries,
-    netTransfers,
+    txHash: tx.txHash,
+    blockNumber: tx.blockNumber,
+    blockTimestamp: tx.blockTimestamp,
+    relayer: tx.relayer,
+    contract: tx.contract,
+    ...calldata,
     settlementsByBuyer,
+  };
+}
+
+export async function decodeBatch(
+  txHash: `0x${string}`,
+): Promise<DecodedBatch> {
+  return decodeBatchFromTx(await fetchBatchTx(txHash));
+}
+
+// JSON shape served by /api/decode-batch/:hash and written by
+// snapshot-batch.ts — bigints stringified, entries flattened.
+export function serializeBatch(decoded: DecodedBatch) {
+  return {
+    ...decoded,
+    blockNumber: decoded.blockNumber.toString(),
+    entries: decoded.entries.map((e) => ({
+      address: e.address,
+      deltaRaw: e.delta.toString(),
+      usdc: e.usdc,
+    })),
   };
 }
 
