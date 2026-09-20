@@ -43,6 +43,7 @@ app.get("/hello-world", gateway.require("$0.01"), (req: PaidRequest, res) => {
 const GATEWAY_API = "https://gateway-api-testnet.circle.com";
 const ARC_EXPLORER = "https://testnet.arcscan.app";
 const GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
+const ARC_DOMAIN = 26;
 
 // Settlements older than ~the indexer's recent-tx window can't be resolved
 // via the live arcscan lookup, so we hardcode known demo settlements.
@@ -50,6 +51,21 @@ const PINNED_BATCH_TX: Record<string, `0x${string}`> = {
   "c9933054-6b34-44bb-8c04-e7e9e1b8352c":
     "0xfbad1baae7fd9b88f4e1b034a4236da02012870acbd6ae83b583e85528be396e",
 };
+
+// Gateway (deposited) balance for an address. This is the balance x402
+// payments actually draw from — distinct from the address's on-chain USDC
+// balance, which is only what funds a deposit into the GatewayWallet.
+app.get("/api/gateway-balance/:address", async (req, res) => {
+  const r = await fetch(`${GATEWAY_API}/v1/balances`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: "USDC",
+      sources: [{ domain: ARC_DOMAIN, depositor: req.params.address }],
+    }),
+  });
+  res.status(r.status).type("application/json").send(await r.text());
+});
 
 app.get("/api/settlement/:id", async (req, res) => {
   const r = await fetch(`${GATEWAY_API}/v1/x402/transfers/${req.params.id}`);

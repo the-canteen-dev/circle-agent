@@ -88,6 +88,28 @@
       td.pos { color: var(--ok-fg); }
       td.neg { color: var(--err-fg); }
       .muted { color: var(--muted); }
+      .note {
+        border-left: 3px solid var(--accent); background: #f4f7fd;
+        padding: 8px 12px; border-radius: 0 4px 4px 0; margin: 10px 0;
+      }
+      .note p { color: var(--fg); }
+      .note.warn { border-left-color: #c98600; background: var(--warn-bg); }
+      .note.warn p { color: var(--warn-fg); }
+      .note.err { border-left-color: #c0392b; background: var(--err-bg); }
+      .note.err p { color: var(--err-fg); }
+      .note strong { font-weight: 600; }
+      .balances {
+        display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0;
+      }
+      .bal {
+        flex: 1 1 260px; border: 1px solid var(--line); border-radius: 6px;
+        padding: 10px 12px;
+      }
+      .bal .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+      .bal .value { font-family: ui-monospace, Menlo, monospace; font-size: 20px; margin: 2px 0; }
+      .bal .hint { font-size: 12px; color: var(--muted); }
+      .bal.spendable { border-color: #b9cdf2; background: #f7faff; }
+      .hidden { display: none; }
       details { margin: 6px 0; }
       summary { cursor: pointer; color: var(--accent); }
       hr { border: none; border-top: 1px solid var(--line); margin: 28px 0; }
@@ -103,10 +125,57 @@
       <span id="addr" class="badge muted">not connected</span>
     </div>
 
+    <div class="note">
+      <p><strong>Two different balances.</strong> Holding USDC in your wallet is
+      <em>not</em> enough to pay an x402 invoice. Gateway payments are debited from a
+      balance you have deposited into the <code>GatewayWallet</code> contract ahead of
+      time — that is what lets the payment settle off-chain with no gas and no tx from
+      you. A wallet with $5 of USDC and an empty Gateway deposit still gets
+      <code>402 {"reason":"insufficient_balance"}</code> on a $0.01 call.</p>
+    </div>
+
+    <div id="balancePanel" class="hidden">
+      <div class="balances">
+        <div class="bal">
+          <div class="label">Wallet (EOA) balance</div>
+          <div class="value" id="walletBal">—</div>
+          <div class="hint">On-chain USDC held by your address. Pays gas and funds
+          deposits. <strong>Not</strong> spendable by x402.</div>
+        </div>
+        <div class="bal spendable">
+          <div class="label">Gateway (deposited) balance</div>
+          <div class="value" id="gatewayBal">—</div>
+          <div class="hint">Deposited into <code>GatewayWallet</code>. This is what
+          <code>/hello-world</code> actually draws from.</div>
+        </div>
+      </div>
+      <div class="row">
+        <button id="refreshBal">Refresh balances</button>
+        <span id="balStatus" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <button id="deposit" disabled>Deposit to Gateway</button>
+      <input id="depositAmount" type="text" value="1" inputmode="decimal"
+             style="min-width:90px" aria-label="Deposit amount in USDC" />
+      <span class="muted">USDC</span>
+      <span id="depositStatus" class="muted"></span>
+    </div>
+    <p class="muted">One-time setup (until you spend it down): <code>approve</code> the
+    <code>GatewayWallet</code> to move your USDC, then <code>deposit(token, value)</code>.
+    Two wallet confirmations, both on-chain, both paid in gas by you. On Arc Testnet the
+    deposit becomes spendable in about half a second; other chains take minutes. Need
+    testnet USDC first? <a href="https://faucet.circle.com/" target="_blank" rel="noreferrer">Circle faucet</a>.</p>
+
+    <div id="depositTrace"></div>
+
     <div class="row">
       <button id="pay" disabled>Pay $0.01 and call /hello-world</button>
       <span id="status" class="muted"></span>
     </div>
+
+    <div id="payHint"></div>
 
     <pre id="out">—</pre>
 
@@ -136,6 +205,13 @@
       const SUPPORTED_URL = `${GATEWAY_API}/v1/x402/supported`;
       const BALANCES_URL = `${GATEWAY_API}/v1/balances`;
 
+      // Arc Testnet: USDC is the native gas token, also exposed as a 6-decimal
+      // ERC-20 at this predeploy. GatewayWallet is the same contract that the
+      // EIP-712 authorization in step 1 is scoped to.
+      const USDC = "0x3600000000000000000000000000000000000000";
+      const GATEWAY_WALLET = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9";
+      const PRICE_RAW = 10_000n; // $0.01, 6 decimals
+
       const addrEl = document.getElementById("addr");
       const payBtn = document.getElementById("pay");
       const statusEl = document.getElementById("status");
@@ -143,8 +219,20 @@
       const traceEl = document.getElementById("trace");
       const lookupBtn = document.getElementById("lookup");
       const lookupInput = document.getElementById("lookupId");
+      const balancePanel = document.getElementById("balancePanel");
+      const walletBalEl = document.getElementById("walletBal");
+      const gatewayBalEl = document.getElementById("gatewayBal");
+      const balStatusEl = document.getElementById("balStatus");
+      const refreshBalBtn = document.getElementById("refreshBal");
+      const depositBtn = document.getElementById("deposit");
+      const depositAmountEl = document.getElementById("depositAmount");
+      const depositStatusEl = document.getElementById("depositStatus");
+      const depositTraceEl = document.getElementById("depositTrace");
+      const payHintEl = document.getElementById("payHint");
 
       let account = null;
+      let walletRaw = null;   // on-chain USDC held by the EOA, 6-decimal bigint
+      let gatewayRaw = null;  // deposited into GatewayWallet, 6-decimal bigint
 
       function setStatus(text, cls = "muted") {
         statusEl.className = cls;
@@ -199,6 +287,280 @@
         }
       }
 
+      // --- USDC amount helpers (6 decimals) ------------------------------
+
+      function fmtUsdc(raw) {
+        const neg = raw < 0n;
+        const abs = neg ? -raw : raw;
+        const whole = abs / 1_000_000n;
+        const frac = (abs % 1_000_000n).toString().padStart(6, "0");
+        return `${neg ? "-" : ""}${whole}.${frac}`;
+      }
+
+      function parseUsdc(text) {
+        const t = String(text).trim();
+        if (!/^\d*\.?\d*$/.test(t) || t === "" || t === ".") return null;
+        const [whole, frac = ""] = t.split(".");
+        if (frac.length > 6) return null;
+        return BigInt(whole || "0") * 1_000_000n + BigInt(frac.padEnd(6, "0") || "0");
+      }
+
+      // --- minimal ABI encoding (no bundler on this page) -----------------
+
+      const pad32 = (hex) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+      const encodeAddress = (a) => pad32(a);
+      const encodeUint = (n) => pad32(n.toString(16));
+      const encodeCall = (selector, ...words) => selector + words.join("");
+
+      const SEL = {
+        balanceOf: "0x70a08231",       // balanceOf(address)
+        allowance: "0xdd62ed3e",       // allowance(address,address)
+        approve: "0x095ea7b3",         // approve(address,uint256)
+        deposit: "0x47e7ef24",         // deposit(address,uint256)
+      };
+
+      async function ethCall(to, data) {
+        const result = await ethereum.request({
+          method: "eth_call",
+          params: [{ to, data }, "latest"],
+        });
+        return BigInt(result);
+      }
+
+      async function waitForReceipt(hash, timeoutMs = 90_000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const r = await ethereum.request({
+            method: "eth_getTransactionReceipt",
+            params: [hash],
+          });
+          if (r) {
+            if (r.status !== "0x1") throw new Error(`tx ${hash} reverted`);
+            return r;
+          }
+          await new Promise((res) => setTimeout(res, 1000));
+        }
+        throw new Error(`timed out waiting for ${hash}`);
+      }
+
+      // --- balances --------------------------------------------------------
+
+      async function readWalletBalance() {
+        return ethCall(USDC, encodeCall(SEL.balanceOf, encodeAddress(account)));
+      }
+
+      async function readGatewayBalance() {
+        const r = await fetch(`/api/gateway-balance/${account}`);
+        if (!r.ok) throw new Error(`gateway balance lookup ${r.status}`);
+        const body = await r.json();
+        const entry = body.balances?.[0];
+        return {
+          available: parseUsdc(entry?.balance ?? "0") ?? 0n,
+          pendingBatch: parseUsdc(entry?.pendingBatch ?? "0") ?? 0n,
+        };
+      }
+
+      async function refreshBalances() {
+        if (!account) return;
+        balancePanel.classList.remove("hidden");
+        balStatusEl.className = "muted";
+        balStatusEl.textContent = "loading…";
+        const [wallet, gateway] = await Promise.allSettled([
+          readWalletBalance(),
+          readGatewayBalance(),
+        ]);
+
+        if (wallet.status === "fulfilled") {
+          walletRaw = wallet.value;
+          walletBalEl.textContent = `${fmtUsdc(walletRaw)} USDC`;
+        } else {
+          walletBalEl.textContent = "error";
+        }
+
+        if (gateway.status === "fulfilled") {
+          gatewayRaw = gateway.value.available;
+          gatewayBalEl.textContent = `${fmtUsdc(gatewayRaw)} USDC`;
+          balStatusEl.textContent = gateway.value.pendingBatch > 0n
+            ? `${fmtUsdc(gateway.value.pendingBatch)} USDC already spent, waiting on the next batch`
+            : "";
+        } else {
+          gatewayBalEl.textContent = "error";
+          balStatusEl.className = "badge err";
+          balStatusEl.textContent = String(gateway.reason?.message ?? gateway.reason);
+        }
+
+        updatePayHint();
+      }
+
+      function updatePayHint() {
+        if (gatewayRaw === null) {
+          payHintEl.innerHTML = "";
+          return;
+        }
+        if (gatewayRaw < PRICE_RAW) {
+          payHintEl.innerHTML = `
+            <div class="note warn">
+              <p><strong>Your Gateway balance is ${escapeHtml(fmtUsdc(gatewayRaw))} USDC — this call
+              will fail with <code>402 insufficient_balance</code>.</strong></p>
+              <p>The $0.01 comes out of your <em>deposited</em> balance, not the
+              ${escapeHtml(fmtUsdc(walletRaw ?? 0n))} USDC sitting in your wallet. Deposit first
+              (the button above), or click Pay anyway to see exactly what the 402 looks like.</p>
+            </div>`;
+        } else {
+          payHintEl.innerHTML = `
+            <div class="note">
+              <p>Gateway balance covers this call: ${escapeHtml(fmtUsdc(gatewayRaw))} USDC deposited,
+              $0.01 to spend. Your wallet balance is untouched by the payment itself — no tx, no gas.</p>
+            </div>`;
+        }
+      }
+
+      function insufficientGatewayFundsNote(rawBody) {
+        return `
+          <div class="note err">
+            <p><strong>402 <code>insufficient_balance</code> — this is about your Gateway deposit,
+            not your wallet.</strong></p>
+            <p>Wallet (EOA) balance: <code>${escapeHtml(fmtUsdc(walletRaw ?? 0n))} USDC</code> —
+            usable for gas and for deposits, <em>not</em> for x402 payments.<br />
+            Gateway (deposited) balance: <code>${escapeHtml(fmtUsdc(gatewayRaw ?? 0n))} USDC</code> —
+            this is the one the facilitator debits, and it is short of the $0.01 price.</p>
+            <p>Fix: deposit some USDC into <code>GatewayWallet</code> with the button above, wait a
+            second for finality, then retry. Gateway can only settle off-chain and gas-free because
+            the funds are already in the contract before you sign — the facilitator never touches
+            your wallet.</p>
+            <details><summary>raw response</summary><pre>${escapeHtml(rawBody)}</pre></details>
+          </div>`;
+      }
+
+      // --- deposit ---------------------------------------------------------
+
+      function setDepositStatus(text, cls = "muted") {
+        depositStatusEl.className = cls;
+        depositStatusEl.textContent = text;
+      }
+
+      depositBtn.onclick = async () => {
+        const amount = parseUsdc(depositAmountEl.value);
+        if (amount === null || amount <= 0n) {
+          setDepositStatus("enter an amount in USDC (max 6 decimals)", "badge err");
+          return;
+        }
+        depositBtn.disabled = true;
+        depositTraceEl.innerHTML = "";
+        try {
+          await ensureArcTestnet();
+
+          if (walletRaw === null) walletRaw = await readWalletBalance();
+          if (amount > walletRaw) {
+            depositTraceEl.innerHTML = `
+              <div class="note err">
+                <p><strong>Not enough USDC in your wallet to deposit that much.</strong></p>
+                <p>Wallet holds ${escapeHtml(fmtUsdc(walletRaw))} USDC. Top up at the
+                ${getLink("https://faucet.circle.com/", "Circle faucet")} — on Arc, USDC is also
+                the gas token, so leave a little behind for the approve and deposit txs.</p>
+              </div>`;
+            setDepositStatus("insufficient wallet balance", "badge err");
+            return;
+          }
+
+          const txs = [];
+
+          setDepositStatus("checking allowance…");
+          const allowance = await ethCall(
+            USDC,
+            encodeCall(SEL.allowance, encodeAddress(account), encodeAddress(GATEWAY_WALLET)),
+          );
+
+          if (allowance < amount) {
+            setDepositStatus("confirm the approve tx in MetaMask…");
+            const approveHash = await ethereum.request({
+              method: "eth_sendTransaction",
+              params: [{
+                from: account,
+                to: USDC,
+                data: encodeCall(SEL.approve, encodeAddress(GATEWAY_WALLET), encodeUint(amount)),
+              }],
+            });
+            setDepositStatus("approving…");
+            await waitForReceipt(approveHash);
+            txs.push(["approve(GatewayWallet, amount)", approveHash]);
+          }
+
+          setDepositStatus("confirm the deposit tx in MetaMask…");
+          const depositHash = await ethereum.request({
+            method: "eth_sendTransaction",
+            params: [{
+              from: account,
+              to: GATEWAY_WALLET,
+              data: encodeCall(SEL.deposit, encodeAddress(USDC), encodeUint(amount)),
+            }],
+          });
+          setDepositStatus("depositing…");
+          await waitForReceipt(depositHash);
+          txs.push(["deposit(USDC, amount)", depositHash]);
+
+          // Show the txs as soon as they're mined; crediting is a separate wait.
+          depositTraceEl.innerHTML = `
+            <div class="note">
+              <p><strong>Deposited ${escapeHtml(fmtUsdc(amount))} USDC into GatewayWallet.</strong>
+              That balance now lives in the contract, spendable off-chain by signature — which is
+              why the actual $0.01 payment needs no tx and no gas from you.</p>
+              <table>
+                <tr><th>call</th><th>tx</th></tr>
+                ${txs.map(([label, hash]) => `
+                  <tr>
+                    <td>${escapeHtml(label)}</td>
+                    <td class="mono">${getLink(`${EXPLORER}/tx/${hash}`, hash)}</td>
+                  </tr>`).join("")}
+              </table>
+              <p class="muted" id="creditLine">Waiting for Gateway to credit the deposit —
+              it holds back until the deposit tx has enough block confirmations (~0.5s on Arc,
+              minutes on slower chains).</p>
+            </div>`;
+
+          const before = gatewayRaw ?? 0n;
+          setDepositStatus("waiting for Gateway to credit the deposit…");
+          const credited = await waitForGatewayCredit(before);
+
+          const creditLine = document.getElementById("creditLine");
+          if (creditLine) {
+            creditLine.textContent = credited
+              ? `Credited. Gateway balance is now ${fmtUsdc(gatewayRaw)} USDC — that is what /hello-world will debit.`
+              : `Gateway hasn't reflected the new balance yet. Hit "Refresh balances" in a moment.`;
+          }
+          setDepositStatus(
+            credited ? "deposited ✓" : "deposited — balance still settling",
+            credited ? "badge ok" : "badge warn",
+          );
+        } catch (e) {
+          setDepositStatus("error", "badge err");
+          depositTraceEl.innerHTML =
+            `<div class="note err"><p>${escapeHtml(e?.message ?? e)}</p></div>`;
+        } finally {
+          depositBtn.disabled = false;
+          await refreshBalances().catch(() => {});
+        }
+      };
+
+      // Deposits are credited after block confirmations — sub-second on Arc
+      // Testnet, minutes on slower chains. Poll rather than assume.
+      async function waitForGatewayCredit(before, timeoutMs = 30_000) {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          try {
+            const { available } = await readGatewayBalance();
+            if (available > before) {
+              gatewayRaw = available;
+              return true;
+            }
+          } catch {
+            // transient lookup failure — keep polling
+          }
+          await new Promise((res) => setTimeout(res, 1500));
+        }
+        return false;
+      }
+
       document.getElementById("connect").onclick = async () => {
         if (!window.ethereum) {
           setStatus("MetaMask not detected", "err");
@@ -210,8 +572,12 @@
         addrEl.classList.remove("muted");
         await ensureArcTestnet();
         payBtn.disabled = false;
+        depositBtn.disabled = false;
         setStatus("ready", "ok");
+        await refreshBalances();
       };
+
+      refreshBalBtn.onclick = () => refreshBalances();
 
       function randomNonceHex() {
         const b = new Uint8Array(32);
@@ -302,13 +668,20 @@
 
           if (r2.ok) {
             setStatus("paid ✓ — loading trace below", "ok");
+            payHintEl.innerHTML = "";
             const sid = body?.settlementId;
             if (sid) {
               lookupInput.value = sid;
               renderTrace(sid);
             }
+            refreshBalances().catch(() => {});
           } else {
             setStatus(`server returned ${r2.status}`, "err");
+            const raw = typeof body === "string" ? body : JSON.stringify(body, null, 2);
+            if (/insufficient/i.test(raw)) {
+              await refreshBalances().catch(() => {});
+              payHintEl.innerHTML = insufficientGatewayFundsNote(raw);
+            }
           }
         } catch (e) {
           setStatus("error", "err");
@@ -404,13 +777,25 @@
             <h3>Relayer batches multiple transfers</h3>
             <p>Circle's relayer (<code>0xc73e…a884</code>) waits for a flush trigger (volume or timer), then calls <code>submitBatch(calldataBytes, signature)</code> on the GatewayWallet contract. One tx settles many buyers' payments at once.</p>
             <p class="muted">Wait time on testnet: usually ~10 minutes because traffic is low. Under heavy load the relayer flushes every few seconds — you won't see that on testnet today.</p>
+            <div class="note">
+              <p><strong>A batch is a time window, not a group of related payments.</strong>
+              It is not "the batch for your $0.01 call to <code>/hello-world</code>". The relayer
+              sweeps up <em>every</em> Gateway transfer that happens to be pending on this domain
+              when the flush fires — other people's demos, other apps, other sellers, amounts that
+              have nothing to do with this one.</p>
+              <p>So expect the batch below to contain rows you don't recognise: a 25 USDC transfer
+              between two strangers can sit right next to your 0.01. That is the whole economic
+              trick — the fixed cost of one on-chain transaction gets split across everyone who
+              landed in the same window, which is what makes a one-cent payment viable at all.
+              Your own row is tagged <span class="badge ok">you</span>.</p>
+            </div>
           </div>
 
           ${batchInfo?.batchTx ? `
           <div class="step" data-step="5">
             <h3>On-chain <code>submitBatch</code> tx</h3>
             <p>${getLink(batchInfo.explorerUrl, batchInfo.batchTx)}</p>
-            ${decoded ? renderDecoded(decoded, buyer) : `<p class="muted">decoding…</p>`}
+            ${decoded ? renderDecoded(decoded, buyer, amount) : `<p class="muted">decoding…</p>`}
             <details><summary>CLI: decode this batch locally</summary><pre>cd ~/Desktop/desktop/aws_scripts/circle-agent
 npx tsx decode-batch.ts ${batchInfo.batchTx}</pre></details>
           </div>` : `
@@ -430,8 +815,25 @@ npx tsx decode-batch.ts ${batchInfo.batchTx}</pre></details>
         `;
       }
 
-      function renderDecoded(d, focusBuyer) {
+      function renderDecoded(d, focusBuyer, settlementAmount) {
         const tokenShort = d.token.slice(0, 6) + "…" + d.token.slice(-4);
+        // One row per address: several settlements from the same buyer in the
+        // same window collapse into a single delta. Flag it when the traced
+        // settlement is smaller than the buyer's row, or that looks like a bug.
+        const mine = focusBuyer && d.entries.find(
+          (e) => e.address.toLowerCase() === focusBuyer.toLowerCase(),
+        );
+        const mineAbs = mine ? (mine.deltaRaw.startsWith("-") ? mine.deltaRaw.slice(1) : mine.deltaRaw) : null;
+        const aggregated = mineAbs && settlementAmount && BigInt(mineAbs) !== BigInt(settlementAmount);
+        const aggregationNote = aggregated ? `
+          <div class="note">
+            <p><strong>Your row is ${escapeHtml(fmtUsdc(BigInt(mineAbs)))} USDC, but this settlement
+            is ${escapeHtml(fmtUsdc(BigInt(settlementAmount)))} USDC.</strong> Not a mismatch: the
+            batch carries one net delta per address, so every payment you made before this flush
+            (this one included) has been summed into a single row. The individual settlement UUIDs
+            never touch the chain — <code>decode-batch.ts</code> recovers them by matching
+            <code>updatedAt</code> timestamps against the block.</p>
+          </div>` : "";
         const rows = d.entries.map((e) => {
           const v = e.usdc.startsWith("-") ? e.usdc : "+" + e.usdc;
           const cls = e.usdc.startsWith("-") ? "neg" : "pos";
@@ -460,12 +862,19 @@ npx tsx decode-batch.ts ${batchInfo.batchTx}</pre></details>
           </table>
           <h3>Per-buyer deltas (${d.entries.length})</h3>
           <p class="muted">These are the signed balance changes inside <code>calldataBytes</code>. Negative = debit (payer), positive = credit (recipient). Sum is zero.</p>
+          ${aggregationNote}
+          <p class="muted">Most of these rows are strangers. Everything the relayer had pending
+          when it flushed went into this one transaction, so unrelated payments — often far larger
+          than a nanopayment — ride along with yours. Look for the
+          <span class="badge ok">you</span> badge to find your own debit; ignore the rest.</p>
           <table>
             <tr><th>address</th><th class="r">delta</th></tr>
             ${rows}
           </table>
           <h3>Net transfers (${d.netTransfers.length})</h3>
-          <p class="muted">Pairs of equal-and-opposite deltas, inferred from the entries above.</p>
+          <p class="muted">Pairs of equal-and-opposite deltas, inferred from the entries above —
+          each row is one buyer paying one seller, and most of them belong to other people who were
+          simply in the same flush window.</p>
           <table>
             <tr><th>from</th><th></th><th>to</th><th class="r">amount</th></tr>
             ${transferRows}
