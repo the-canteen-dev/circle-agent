@@ -30,14 +30,38 @@ This runs `tsx server.ts` and listens on `http://localhost:3000`.
 
 Endpoints:
 - `GET /hello-world` — paywalled at `$0.01` USDC via the Gateway middleware
+- `GET /api/gateway-balance/:address` — proxies the Gateway deposited-balance lookup
 - `GET /api/settlement/:id` — proxies the Gateway settlement lookup
 - `GET /api/decode-batch/:hash` — decodes a `submitBatch` transaction
 - `GET /api/batch-tx/:id` — resolves a settlement id to its on-chain batch tx
 - `/` — redirects to `/buyer.html` (browser-based buyer UI)
 
+## Before you pay: deposit into the Gateway
+
+This is the step that trips up most people on their first x402 payment. **USDC in your wallet is not what gets spent.** Gateway payments are debited from a balance you have deposited, ahead of time, into the `GatewayWallet` contract (`0x0077777d7EBA4688BDeF3E311b846F25870A19B9` on Arc Testnet). That pre-funding is what allows the actual payment to be a bare EIP-712 signature — no transaction, no gas, no wallet popup beyond "sign".
+
+So there are two balances to keep straight:
+
+| Balance | Where it lives | What it's for |
+| --- | --- | --- |
+| **Wallet (EOA)** | your address, on-chain | gas, and funding deposits — **not** spendable by x402 |
+| **Gateway (deposited)** | `GatewayWallet` contract, attributed to your address | what `/hello-world` actually debits |
+
+A wallet holding $5 of USDC with nothing deposited will get `402 {"error":"Payment settlement failed","reason":"insufficient_balance"}` on a $0.01 call. The buyer page shows both balances side by side once you connect, and the **Deposit to Gateway** button does the one-time setup for you: `approve(GatewayWallet, amount)` on the USDC contract, then `deposit(USDC, amount)` on `GatewayWallet`. Two on-chain transactions, both paid in gas from your wallet balance (on Arc, USDC *is* the gas token — leave a little behind). On Arc Testnet the deposit is credited after roughly half a second; other chains wait minutes for block confirmations.
+
+To check a Gateway balance by hand:
+
+```bash
+curl -s -X POST https://gateway-api-testnet.circle.com/v1/balances \
+  -H "Content-Type: application/json" \
+  -d '{"token":"USDC","sources":[{"domain":26,"depositor":"0xYOUR_ADDRESS"}]}'
+```
+
+The server also proxies this at `GET /api/gateway-balance/:address`, which is what the page uses.
+
 ## Running the buyer (browser — recommended)
 
-With the server running, open `http://localhost:3000/` in a browser. The page (`public/buyer.html`) connects to MetaMask, prompts you to switch to Arc Testnet, and signs the EIP-712 payment authorization in the wallet. No env vars or private keys required.
+With the server running, open `http://localhost:3000/` in a browser. The page (`public/buyer.html`) connects to MetaMask, prompts you to switch to Arc Testnet, shows your wallet vs. Gateway balances, lets you deposit if needed, and signs the EIP-712 payment authorization in the wallet. No env vars or private keys required.
 
 After paying, the page renders a six-step **payment trace** for the settlement you just created, with every step linked to the corresponding facilitator API call or block-explorer page. You can also paste any existing settlement UUID into the "Payment trace" input to inspect a past payment — the page ships with one pre-loaded so the trace is browseable without paying first.
 
@@ -66,6 +90,13 @@ Circle's Gateway accepts the signed auth, optimistically debits the buyer's bala
 ### 4. Relayer batches multiple transfers
 
 Circle's relayer (an EOA controlled by Circle — `0xc73e…a884` for the pinned demo settlement, but Circle may rotate it) waits for a flush trigger (volume or timer) and then calls `submitBatch(calldataBytes, signature)` on the `GatewayWallet` contract. One on-chain tx settles many buyers' payments at once. On Arc Testnet, traffic is low and you should usually expect a ~10 minute wait before your settlement makes it on-chain — under heavy traffic the relayer flushes much faster (every few seconds), but you won't see that on testnet today.
+
+**A batch is a time window, not a group of related payments.** It is not "the batch for your `/hello-world` call". When the flush fires, the relayer sweeps up *every* Gateway transfer pending on the domain — other people's demos, other apps, other sellers, amounts that have nothing to do with yours. Expect the decoded batch to contain rows you don't recognise: a 25 USDC transfer between two strangers sitting next to your 0.01 is normal, and is in fact the whole point. The fixed cost of one on-chain transaction is split across everyone who landed in the same window, which is what makes a one-cent payment economical at all.
+
+Two consequences worth knowing when you read the batch:
+
+- **Most rows aren't yours.** The page tags your own debit with a `you` badge; ignore the rest.
+- **One row per address.** If you made several payments before the flush, they are summed into a single net delta, so your row can be larger than the settlement you're tracing. The individual settlement UUIDs never go on-chain — `decode-batch.ts` recovers them by matching `updatedAt` timestamps against the block.
 
 ![Step 4 — relayer batches](public/img/trace-step-4-relayer.png)
 
