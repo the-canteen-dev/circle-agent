@@ -1,0 +1,78 @@
+{
+  "txHash": "0xfbad1baae7fd9b88f4e1b034a4236da02012870acbd6ae83b583e85528be396e",
+  "blockNumber": "42008890",
+  "blockTimestamp": 1778682181,
+  "relayer": "0xc73eF0D80C6c5e7d632d8fF8F651fFCA8654a884",
+  "contract": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+  "batchId": "0x2118772fdbc061c31204abccc66c33edac9cad4aa47f82f22f55ec0043055279",
+  "domain": 26,
+  "token": "0x3600000000000000000000000000000000000000",
+  "innerContract": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+  "entries": [
+    {
+      "address": "0x933a2405F84c224BE1EF373ba16E992e1F459682",
+      "deltaRaw": "20000",
+      "usdc": "0.020000"
+    },
+    {
+      "address": "0x99952E2E15154aE668605e036806a66E1333186a",
+      "deltaRaw": "25000000",
+      "usdc": "25.000000"
+    },
+    {
+      "address": "0xA0F106e569027f315C3CEE2F3dD39f8Eb4391A80",
+      "deltaRaw": "-20000",
+      "usdc": "-0.020000"
+    },
+    {
+      "address": "0xA474f1179dcE14909D70A0F0b58e25E8e17650EC",
+      "deltaRaw": "-25000000",
+      "usdc": "-25.000000"
+    }
+  ],
+  "netTransfers": [
+    {
+      "from": "0xA0F106e569027f315C3CEE2F3dD39f8Eb4391A80",
+      "to": "0x933a2405F84c224BE1EF373ba16E992e1F459682",
+      "usdc": "0.020000"
+    },
+    {
+      "from": "0xA474f1179dcE14909D70A0F0b58e25E8e17650EC",
+      "to": "0x99952E2E15154aE668605e036806a66E1333186a",
+      "usdc": "25.000000"
+    }
+  ],
+  "settlementsByBuyer": {
+    "0xa0f106e569027f315c3cee2f3dd39f8eb4391a80": [
+      {
+        "id": "c9933054-6b34-44bb-8c04-e7e9e1b8352c",
+        "status": "completed",
+        "token": "USDC",
+        "sendingNetwork": "eip155:5042002",
+        "recipientNetwork": "eip155:5042002",
+        "fromAddress": "0xa0f106e569027f315c3cee2f3dd39f8eb4391a80",
+        "toAddress": "0x933a2405f84c224be1ef373ba16e992e1f459682",
+        "amount": "10000",
+        "nonce": "0x0059ea03654b93d05d0c8ff20a7a9b96ee934a9ce7933aa716f1d36140fb7683",
+        "txHash": "0xfbad1baae7fd9b88f4e1b034a4236da02012870acbd6ae83b583e85528be396e",
+        "createdAt": "2026-05-13T14:12:18.637Z",
+        "updatedAt": "2026-05-13T14:23:03.192Z"
+      },
+      {
+        "id": "003893f3-4242-4842-a4c0-f5c4f797c9f2",
+        "status": "completed",
+        "token": "USDC",
+        "sendingNetwork": "eip155:5042002",
+        "recipientNetwork": "eip155:5042002",
+        "fromAddress": "0xa0f106e569027f315c3cee2f3dd39f8eb4391a80",
+        "toAddress": "0x933a2405f84c224be1ef373ba16e992e1f459682",
+        "amount": "10000",
+        "nonce": "0xa82630ff519432053e0cbeea622a875f5d17a19b994535c0c161d70a8376108b",
+        "txHash": "0xfbad1baae7fd9b88f4e1b034a4236da02012870acbd6ae83b583e85528be396e",
+        "createdAt": "2026-05-13T14:08:41.109Z",
+        "updatedAt": "2026-05-13T14:23:03.192Z"
+      }
+    ],
+    "0xa474f1179dce14909d70a0f0b58e25e8e17650ec": []
+  }
+}

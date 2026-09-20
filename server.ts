@@ -1,7 +1,8 @@
 import express from "express";
 import { createGatewayMiddleware } from "@circle-fin/x402-batching/server";
 import { formatUnits } from "viem";
-import { decodeBatch } from "./decode-batch.ts";
+import { readFile } from "node:fs/promises";
+import { decodeBatch, serializeBatch } from "./decode-batch.ts";
 
 type PaidRequest = express.Request & {
   payment?: {
@@ -72,18 +73,25 @@ app.get("/api/settlement/:id", async (req, res) => {
   res.status(r.status).type("application/json").send(await r.text());
 });
 
+// Batches snapshotted into data/batches/<hash>.json (see snapshot-batch.ts)
+// are served as-is, so the pinned demo trace keeps working after the public
+// RPC drops the tx from its hash index.
 app.get("/api/decode-batch/:hash", async (req, res) => {
+  const hash = req.params.hash.toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/.test(hash)) {
+    res.status(400).json({ error: "not a tx hash" });
+    return;
+  }
+  const snapshot = await readFile(`data/batches/${hash}.json`, "utf8").catch(
+    () => null,
+  );
+  if (snapshot) {
+    res.type("application/json").send(snapshot);
+    return;
+  }
   try {
-    const decoded = await decodeBatch(req.params.hash as `0x${string}`);
-    res.json({
-      ...decoded,
-      blockNumber: decoded.blockNumber.toString(),
-      entries: decoded.entries.map((e) => ({
-        address: e.address,
-        deltaRaw: e.delta.toString(),
-        usdc: e.usdc,
-      })),
-    });
+    const decoded = await decodeBatch(hash as `0x${string}`);
+    res.json(serializeBatch(decoded));
   } catch (e) {
     res.status(400).json({ error: String((e as Error).message ?? e) });
   }
