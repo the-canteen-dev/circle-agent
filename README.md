@@ -32,7 +32,7 @@ Endpoints:
 - `GET /hello-world` — paywalled at `$0.01` USDC via the Gateway middleware
 - `GET /api/gateway-balance/:address` — proxies the Gateway deposited-balance lookup
 - `GET /api/settlement/:id` — proxies the Gateway settlement lookup
-- `GET /api/decode-batch/:hash` — decodes a `submitBatch` transaction
+- `GET /api/decode-batch/:hash` — decodes a `submitBatch` transaction (served from `data/batches/<hash>.json` when a snapshot exists)
 - `GET /api/batch-tx/:id` — resolves a settlement id to its on-chain batch tx
 - `/` — redirects to `/buyer.html` (browser-based buyer UI)
 
@@ -48,6 +48,8 @@ So there are two balances to keep straight:
 | **Gateway (deposited)** | `GatewayWallet` contract, attributed to your address | what `/hello-world` actually debits |
 
 A wallet holding $5 of USDC with nothing deposited will get `402 {"error":"Payment settlement failed","reason":"insufficient_balance"}` on a $0.01 call. The buyer page shows both balances side by side once you connect, and the **Deposit to Gateway** button does the one-time setup for you: `approve(GatewayWallet, amount)` on the USDC contract, then `deposit(USDC, amount)` on `GatewayWallet`. Two on-chain transactions, both paid in gas from your wallet balance (on Arc, USDC *is* the gas token — leave a little behind). On Arc Testnet the deposit is credited after roughly half a second; other chains wait minutes for block confirmations.
+
+![Live demo — wallet balance vs. Gateway balance, with the deposit button](public/img/live-demo-balances.png)
 
 To check a Gateway balance by hand:
 
@@ -143,6 +145,16 @@ npx tsx decode-batch.ts 0xfbad1baae7fd9b88f4e1b034a4236da02012870acbd6ae83b583e8
 ```
 
 That hash is the batch tx for the demo settlement pinned in `public/buyer.html`. Replace it with any `submitBatch(...)` tx hash on Arc Testnet.
+
+### Pinning a batch so the demo doesn't rot
+
+Public RPC nodes only keep the transaction-hash index for a recent window of blocks. After a few weeks, `getTransaction` for an old batch returns nothing even though the block is still served — which is exactly what happened to the pinned demo batch above. To keep the default trace deterministic, decoded batches can be snapshotted into the repo:
+
+```bash
+npx tsx snapshot-batch.ts 0x<batch-tx-hash>
+```
+
+That writes `data/batches/<hash>.json` in the same shape `/api/decode-batch/:hash` returns, and the server serves the file as-is when it exists. The script tries the RPC first and falls back to the block explorer (which keeps its own database) for the calldata when the tx has already aged out. The pinned demo batch is committed this way; re-run the script if you re-pin a different settlement.
 
 Override the RPC endpoint with `ARC_TESTNET_RPC` (default: `https://rpc.testnet.arc.network`):
 

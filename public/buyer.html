@@ -804,9 +804,15 @@
         }
 
         let decoded = null;
+        let decodeError = null;
         if (batchInfo?.batchTx) {
           const dr = await fetch(`/api/decode-batch/${batchInfo.batchTx}`);
-          if (dr.ok) decoded = await dr.json();
+          if (dr.ok) {
+            decoded = await dr.json();
+          } else {
+            const err = await dr.json().catch(() => ({}));
+            decodeError = err.error ?? `decode failed (HTTP ${dr.status})`;
+          }
         }
 
         const allTransfersForBuyer = `${GATEWAY_API}/v1/x402/transfers?from=${buyer}`;
@@ -879,9 +885,15 @@
           <div class="step" data-step="5">
             <h3>On-chain <code>submitBatch</code> tx</h3>
             <p>${getLink(batchInfo.explorerUrl, batchInfo.batchTx)}</p>
-            ${decoded ? renderDecoded(decoded, buyer, amount) : `<p class="muted">decoding…</p>`}
-            <details><summary>CLI: decode this batch locally</summary><pre>cd ~/Desktop/desktop/aws_scripts/circle-agent
-npx tsx decode-batch.ts ${batchInfo.batchTx}</pre></details>
+            ${decoded ? renderDecoded(decoded, buyer, amount) : `
+            <div class="note err">
+              <p><strong>Couldn't decode this batch.</strong> <span class="mono">${escapeHtml(decodeError ?? "unknown error")}</span></p>
+              <p>The usual cause: public RPC nodes only keep the transaction-hash index for a
+              recent window of blocks, so old batches stop resolving by hash even though the
+              block itself is still there. The explorer link above still works — it has its own
+              database.</p>
+            </div>`}
+            <details><summary>CLI: decode this batch locally</summary><pre>npx tsx decode-batch.ts ${batchInfo.batchTx}</pre></details>
           </div>` : `
           <div class="step" data-step="5">
             <h3>On-chain <code>submitBatch</code> tx</h3>
